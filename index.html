@@ -7,6 +7,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <style>
 :root {
   --primary:#2563EB; --primary-dk:#1D4ED8; --accent:#059669; --accent-lt:#ECFDF5;
@@ -28,9 +31,17 @@ button,input,select,textarea{font-family:var(--font)} button{border:none;cursor:
 
 .app-header{background:var(--card);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;backdrop-filter:blur(12px)}
 .app-title{font-size:17px;font-weight:700}
-.header-actions{display:flex;gap:6px}
+.header-actions{display:flex;gap:6px;align-items:center}
 .hdr-btn{width:34px;height:34px;border-radius:10px;background:var(--bg);font-size:16px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);transition:background .2s}
 .hdr-btn:hover{background:var(--border)}
+.auth-btn{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:20px;border:1.5px solid var(--border);background:var(--bg);font-size:11px;font-weight:600;color:var(--text-sub);cursor:pointer;transition:all .2s;max-width:130px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.auth-btn:hover{border-color:var(--primary);color:var(--primary)}
+.auth-btn.signed-in{border-color:var(--accent);color:var(--accent)}
+.sync-dot{width:7px;height:7px;border-radius:50%;background:var(--text-light);flex-shrink:0}
+.sync-dot.syncing{background:#F59E0B;animation:pulse .8s infinite}
+.sync-dot.synced{background:#059669}
+.sync-dot.error{background:#EF4444}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
 .tab-bar{display:flex;gap:0;background:var(--card);border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 .tab-bar::-webkit-scrollbar{display:none}
@@ -242,6 +253,10 @@ body.dark .wb-expired{background:#450A0A;color:#FCA5A5}
   <div class="header-actions">
     <button class="hdr-btn" onclick="openGSearch()" title="全域搜尋">🔍</button>
     <button class="hdr-btn" onclick="toggleDark()" id="darkBtn" title="深淺色">🌙</button>
+    <button class="auth-btn" id="authBtn" onclick="authAction()">
+      <span class="sync-dot" id="syncDot"></span>
+      <span id="authLabel">🔑 登入同步</span>
+    </button>
   </div>
 </header>
 
@@ -571,11 +586,94 @@ body.dark .wb-expired{background:#450A0A;color:#FCA5A5}
 </div></div>
 
 <script>
+/* ══ Firebase ══ */
+firebase.initializeApp({
+  apiKey:'AIzaSyBeDJWLqk53lDWRGU9Xg3yGS5ekAY_1XO0',
+  authDomain:'moneybook-52725.firebaseapp.com',
+  projectId:'moneybook-52725',
+  storageBucket:'moneybook-52725.firebasestorage.app',
+  messagingSenderId:'883073234101',
+  appId:'1:883073234101:web:0eeff48cda7f10dc42fafc'
+});
+var fbAuth=firebase.auth();
+var fbDb=firebase.firestore();
+var fbUser=null;
+var syncTimers={};
+
+function setSyncDot(state){
+  var d=document.getElementById('syncDot');
+  if(!d)return;
+  d.className='sync-dot'+(state?' '+state:'');
+}
+
+function authAction(){
+  if(fbUser){
+    if(confirm('確定要登出？'))fbAuth.signOut();
+  }else{
+    fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(function(e){
+      toast('登入失敗：'+e.message,'warn');
+    });
+  }
+}
+
+function userDocRef(key){
+  return fbDb.collection('home_manager').doc(fbUser.uid).collection('data').doc(key);
+}
+
+var syncQueue={};
+function schedulePush(key){
+  clearTimeout(syncTimers[key]);
+  syncTimers[key]=setTimeout(function(){
+    if(!fbUser)return;
+    var val=syncQueue[key];
+    setSyncDot('syncing');
+    userDocRef(key).set({data:val,updatedAt:firebase.firestore.FieldValue.serverTimestamp()})
+      .then(function(){setSyncDot('synced');setTimeout(function(){setSyncDot('')},2000)})
+      .catch(function(){setSyncDot('error')});
+  },600);
+}
+
+function pullFromFirestore(){
+  if(!fbUser)return;
+  setSyncDot('syncing');
+  fbDb.collection('home_manager').doc(fbUser.uid).collection('data').get()
+    .then(function(snap){
+      var count=0;
+      snap.forEach(function(doc){
+        localStorage.setItem(doc.id,JSON.stringify(doc.data().data));
+        count++;
+      });
+      setSyncDot('synced');
+      setTimeout(function(){setSyncDot('')},2000);
+      if(count>0){dashRender();toast('已從雲端同步 '+count+' 項資料');}
+    })
+    .catch(function(e){setSyncDot('error');toast('同步失敗：'+e.message,'warn')});
+}
+
+fbAuth.onAuthStateChanged(function(user){
+  fbUser=user;
+  var btn=document.getElementById('authBtn');
+  var label=document.getElementById('authLabel');
+  if(user){
+    if(btn)btn.classList.add('signed-in');
+    if(label)label.textContent=user.displayName||user.email;
+    pullFromFirestore();
+  }else{
+    if(btn)btn.classList.remove('signed-in');
+    if(label)label.textContent='🔑 登入同步';
+    setSyncDot('');
+  }
+});
+
 /* ══ Helpers ══ */
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function fmtP(n){return'TWD '+Number(n||0).toLocaleString()}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
-function LS(k,v){if(v===undefined){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}}localStorage.setItem(k,JSON.stringify(v))}
+function LS(k,v){
+  if(v===undefined){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}}
+  localStorage.setItem(k,JSON.stringify(v));
+  if(fbUser){syncQueue[k]=v;schedulePush(k);}
+}
 function today(){return new Date().toISOString().slice(0,10)}
 function thisMonth(){return new Date().toISOString().slice(0,7)}
 
