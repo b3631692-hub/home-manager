@@ -610,11 +610,20 @@ function authAction(){
   if(fbUser){
     if(confirm('確定要登出？'))fbAuth.signOut();
   }else{
-    fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(function(e){
-      toast('登入失敗：'+e.message,'warn');
-    });
+    fbAuth.signInWithRedirect(new firebase.auth.GoogleAuthProvider());
   }
 }
+
+// 處理 redirect 登入回傳
+fbAuth.getRedirectResult().then(function(result){
+  if(result && result.user){
+    toast('登入成功：'+result.user.displayName);
+  }
+}).catch(function(e){
+  if(e.code!=='auth/no-auth-event'){
+    toast('登入失敗：'+e.message,'warn');
+  }
+});
 
 function userDocRef(key){
   return fbDb.collection('home_manager').doc(fbUser.uid).collection('data').doc(key);
