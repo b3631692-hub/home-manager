@@ -586,94 +586,6 @@ body.dark .wb-expired{background:#450A0A;color:#FCA5A5}
 </div></div>
 
 <script>
-/* ══ Firebase ══ */
-firebase.initializeApp({
-  apiKey:'AIzaSyBeDJWLqk53lDWRGU9Xg3yGS5ekAY_1XO0',
-  authDomain:'moneybook-52725.firebaseapp.com',
-  projectId:'moneybook-52725',
-  storageBucket:'moneybook-52725.firebasestorage.app',
-  messagingSenderId:'883073234101',
-  appId:'1:883073234101:web:0eeff48cda7f10dc42fafc'
-});
-var fbAuth=firebase.auth();
-var fbDb=firebase.firestore();
-var fbUser=null;
-var syncTimers={};
-
-function setSyncDot(state){
-  var d=document.getElementById('syncDot');
-  if(!d)return;
-  d.className='sync-dot'+(state?' '+state:'');
-}
-
-function authAction(){
-  if(fbUser){
-    if(confirm('確定要登出？'))fbAuth.signOut();
-  }else{
-    fbAuth.signInWithRedirect(new firebase.auth.GoogleAuthProvider());
-  }
-}
-
-// 處理 redirect 登入回傳
-fbAuth.getRedirectResult().then(function(result){
-  if(result && result.user){
-    toast('登入成功：'+result.user.displayName);
-  }
-}).catch(function(e){
-  if(e.code!=='auth/no-auth-event'){
-    toast('登入失敗：'+e.message,'warn');
-  }
-});
-
-function userDocRef(key){
-  return fbDb.collection('home_manager').doc(fbUser.uid).collection('data').doc(key);
-}
-
-var syncQueue={};
-function schedulePush(key){
-  clearTimeout(syncTimers[key]);
-  syncTimers[key]=setTimeout(function(){
-    if(!fbUser)return;
-    var val=syncQueue[key];
-    setSyncDot('syncing');
-    userDocRef(key).set({data:val,updatedAt:firebase.firestore.FieldValue.serverTimestamp()})
-      .then(function(){setSyncDot('synced');setTimeout(function(){setSyncDot('')},2000)})
-      .catch(function(){setSyncDot('error')});
-  },600);
-}
-
-function pullFromFirestore(){
-  if(!fbUser)return;
-  setSyncDot('syncing');
-  fbDb.collection('home_manager').doc(fbUser.uid).collection('data').get()
-    .then(function(snap){
-      var count=0;
-      snap.forEach(function(doc){
-        localStorage.setItem(doc.id,JSON.stringify(doc.data().data));
-        count++;
-      });
-      setSyncDot('synced');
-      setTimeout(function(){setSyncDot('')},2000);
-      if(count>0){dashRender();toast('已從雲端同步 '+count+' 項資料');}
-    })
-    .catch(function(e){setSyncDot('error');toast('同步失敗：'+e.message,'warn')});
-}
-
-fbAuth.onAuthStateChanged(function(user){
-  fbUser=user;
-  var btn=document.getElementById('authBtn');
-  var label=document.getElementById('authLabel');
-  if(user){
-    if(btn)btn.classList.add('signed-in');
-    if(label)label.textContent=user.displayName||user.email;
-    pullFromFirestore();
-  }else{
-    if(btn)btn.classList.remove('signed-in');
-    if(label)label.textContent='🔑 登入同步';
-    setSyncDot('');
-  }
-});
-
 /* ══ Helpers ══ */
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function fmtP(n){return'TWD '+Number(n||0).toLocaleString()}
@@ -681,7 +593,7 @@ function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2
 function LS(k,v){
   if(v===undefined){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}}
   localStorage.setItem(k,JSON.stringify(v));
-  if(fbUser){syncQueue[k]=v;schedulePush(k);}
+  if(typeof fbUser!=='undefined'&&fbUser){syncQueue[k]=v;schedulePush(k);}
 }
 function today(){return new Date().toISOString().slice(0,10)}
 function thisMonth(){return new Date().toISOString().slice(0,7)}
@@ -1352,6 +1264,89 @@ function fabQuick(type){
 
 /* ══ Init ══ */
 dashRender();
+
+/* ══ Firebase 同步（最後初始化，不影響其他功能） ══ */
+var fbAuth=null, fbDb=null, fbUser=null, syncQueue={}, syncTimers={};
+
+function setSyncDot(state){
+  var d=document.getElementById('syncDot');
+  if(d)d.className='sync-dot'+(state?' '+state:'');
+}
+function userDocRef(key){
+  return fbDb.collection('home_manager').doc(fbUser.uid).collection('data').doc(key);
+}
+function schedulePush(key){
+  clearTimeout(syncTimers[key]);
+  syncTimers[key]=setTimeout(function(){
+    if(!fbUser||!fbDb)return;
+    setSyncDot('syncing');
+    userDocRef(key).set({data:syncQueue[key],updatedAt:firebase.firestore.FieldValue.serverTimestamp()})
+      .then(function(){setSyncDot('synced');setTimeout(function(){setSyncDot('')},2000)})
+      .catch(function(e){setSyncDot('error');console.error('sync error',e);});
+  },600);
+}
+function pullFromFirestore(){
+  if(!fbUser||!fbDb)return;
+  setSyncDot('syncing');
+  fbDb.collection('home_manager').doc(fbUser.uid).collection('data').get()
+    .then(function(snap){
+      var count=0;
+      snap.forEach(function(doc){localStorage.setItem(doc.id,JSON.stringify(doc.data().data));count++;});
+      setSyncDot('synced');
+      setTimeout(function(){setSyncDot('')},2000);
+      if(count>0){dashRender();toast('已從雲端同步 '+count+' 項資料');}
+      else{toast('雲端尚無資料，請先從本機匯入');}
+    })
+    .catch(function(e){setSyncDot('error');toast('同步失敗：'+e.message,'warn');});
+}
+function authAction(){
+  if(!fbAuth){toast('Firebase 未載入，請重整頁面','warn');return;}
+  if(fbUser){
+    if(confirm('確定要登出？'))fbAuth.signOut();
+  }else{
+    document.getElementById('authLabel').textContent='跳轉中...';
+    fbAuth.signInWithRedirect(new firebase.auth.GoogleAuthProvider());
+  }
+}
+
+try{
+  if(!firebase.apps.length){
+    firebase.initializeApp({
+      apiKey:'AIzaSyBeDJWLqk53lDWRGU9Xg3yGS5ekAY_1XO0',
+      authDomain:'moneybook-52725.firebaseapp.com',
+      projectId:'moneybook-52725',
+      storageBucket:'moneybook-52725.firebasestorage.app',
+      messagingSenderId:'883073234101',
+      appId:'1:883073234101:web:0eeff48cda7f10dc42fafc'
+    });
+  }
+  fbAuth=firebase.auth();
+  fbDb=firebase.firestore();
+
+  fbAuth.getRedirectResult()
+    .then(function(result){if(result&&result.user)toast('登入成功：'+result.user.displayName);})
+    .catch(function(e){if(e.code!=='auth/no-auth-event')toast('登入錯誤：'+e.message,'warn');});
+
+  fbAuth.onAuthStateChanged(function(user){
+    fbUser=user;
+    var btn=document.getElementById('authBtn');
+    var label=document.getElementById('authLabel');
+    if(user){
+      if(btn)btn.classList.add('signed-in');
+      if(label)label.textContent=user.displayName||user.email;
+      pullFromFirestore();
+    }else{
+      if(btn)btn.classList.remove('signed-in');
+      if(label)label.textContent='🔑 登入同步';
+      setSyncDot('');
+    }
+  });
+  document.getElementById('authBtn').title='Firebase 已載入';
+}catch(e){
+  console.error('Firebase init failed:',e);
+  var label=document.getElementById('authLabel');
+  if(label)label.textContent='⚠️ 同步不可用';
+}
 </script>
 </body>
 </html>
